@@ -159,6 +159,57 @@ def setup_cricket_style():
     </style>
     """, unsafe_allow_html=True)
 
+def smooth_probabilities(raw_probs, smoothing_factor=0.15):
+    """
+    Apply smoothing to extreme probabilities to make them more realistic
+    """
+    # Get the probabilities
+    prob_0, prob_1 = raw_probs[0], raw_probs[1]
+    
+    # Apply smoothing - pull extreme values towards center
+    if prob_1 > 0.85:  # If batting team probability is very high
+        prob_1 = 0.85 - (prob_1 - 0.85) * smoothing_factor
+        prob_0 = 1 - prob_1
+    elif prob_1 < 0.15:  # If batting team probability is very low
+        prob_1 = 0.15 + (0.15 - prob_1) * smoothing_factor
+        prob_0 = 1 - prob_1
+    
+    return [prob_0, prob_1]
+
+def calculate_contextual_adjustment(runs_remaining, balls_remaining, wickets_left, required_rate, current_rate):
+    """
+    Calculate contextual adjustments based on match situation
+    """
+    adjustment = 0
+    
+    # Pressure situations
+    if required_rate > 12:
+        adjustment -= 0.1  # Favor bowling team
+    elif required_rate < 6:
+        adjustment += 0.1  # Favor batting team
+    
+    # Wickets in hand
+    if wickets_left <= 3:
+        adjustment -= 0.05  # Pressure on batting team
+    elif wickets_left >= 7:
+        adjustment += 0.05  # Batting team has depth
+    
+    # Death overs
+    if balls_remaining <= 30:  # Last 5 overs
+        if required_rate > 10:
+            adjustment -= 0.08
+        else:
+            adjustment += 0.03
+    
+    # Run rate comparison
+    rate_diff = required_rate - current_rate
+    if rate_diff > 3:
+        adjustment -= 0.05
+    elif rate_diff < -1:
+        adjustment += 0.05
+    
+    return max(-0.25, min(0.25, adjustment))  # Cap adjustment between -25% and +25%
+
 setup_cricket_style()
 
 # Header
@@ -235,7 +286,7 @@ if overs_done > 0:
     with stat4:
         st.metric("Required Rate", f"{required_rate:.2f}")
 
-# Prediction
+# Prediction methodology
 st.markdown("---")
 if st.button("🎯 Predict Match Winner", use_container_width=True):
     
@@ -269,10 +320,17 @@ if st.button("🎯 Predict Match Winner", use_container_width=True):
                 'toss_winner': [toss_winner]
             })
 
-            # Predict
-            match_prediction = cricket_model.predict_proba(game_data)
-            batting_probability = match_prediction[0][1] * 100
-            bowling_probability = match_prediction[0][0] * 100
+            # Get raw prediction
+            raw_prediction = cricket_model.predict_proba(game_data)
+            
+            smoothed_probs = smooth_probabilities(raw_prediction[0])
+            
+            contextual_adj = calculate_contextual_adjustment(
+                runs_remaining, balls_remaining, wickets_left, required_rate, current_rate
+            )
+            
+            batting_probability = max(5, min(95, (smoothed_probs[1] + contextual_adj) * 100))
+            bowling_probability = 100 - batting_probability
 
             # Show results
             st.markdown("### 🏆 Match Prediction Results")
@@ -300,15 +358,61 @@ if st.button("🎯 Predict Match Winner", use_container_width=True):
                 """, unsafe_allow_html=True)
                 st.progress(int(bowling_probability))
           
+            # Show match insights
+            st.markdown("---")
+            st.markdown("### 📊 Match Insights")
+            
+            insight_col1, insight_col2 = st.columns(2)
+            
+            with insight_col1:
+                if required_rate > current_rate + 2:
+                    st.warning("⚠️ Required run rate significantly higher than current rate")
+                elif required_rate < current_rate - 1:
+                    st.success("✅ Batting team ahead of required rate")
+                else:
+                    st.info("ℹ️ Match evenly poised")
+            
+            with insight_col2:
+                if wickets_left <= 3:
+                    st.error("🚨 Few wickets remaining - pressure situation")
+                elif wickets_left >= 7:
+                    st.success("💪 Plenty of wickets in hand")
+                else:
+                    st.info("⚖️ Moderate wickets remaining")
+            
             # Final verdict
             st.markdown("---")
             
-            if batting_probability > 60:
+            if batting_probability > 65:
                 st.success(f"🎯 **{batting_team}** is strongly favored to win!")
-            elif bowling_probability > 60:
+            elif bowling_probability > 65:
                 st.info(f"🛡️ **{bowling_team}** has the upper hand!")
             else:
                 st.warning("⚖️ Too close to call - exciting finish ahead!")
+                
+            # Show key factors
+            st.markdown("### 🔍 Key Factors")
+            factors = []
+            
+            if required_rate > 12:
+                factors.append("🔥 High required run rate favors bowling team")
+            elif required_rate < 6:
+                factors.append("🎯 Low required run rate favors batting team")
+                
+            if balls_remaining <= 30:
+                factors.append("⏰ Death overs - crucial phase")
+                
+            if wickets_left <= 3:
+                factors.append("🎯 Limited wickets increase pressure")
+                
+            if abs(required_rate - current_rate) > 3:
+                factors.append("📊 Significant difference in run rates")
+            
+            if factors:
+                for factor in factors:
+                    st.write(f"• {factor}")
+            else:
+                st.write("• Match is evenly balanced with no major advantage")
 
         except Exception as error:
             st.error(f"❌ Prediction failed: {error}")
@@ -325,6 +429,11 @@ with st.expander("📚 How to Use This Predictor"):
     5. **Predict** - Click the button to get win probabilities
     
     **Note:** The model works best after at least 3-4 overs have been bowled.
+    
+    **Probability Calculation:**
+    - The model considers historical match data and current situation
+    - Probabilities are adjusted based on match context (run rates, wickets, pressure situations)
+    - Extreme predictions are smoothed to provide more realistic probabilities
     """)
 
 # Footer
